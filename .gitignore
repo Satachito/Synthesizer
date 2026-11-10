@@ -1,0 +1,5 @@
+.DS_Store
+# テストで書き出す WAV と実行ファイル（host_test を走らせれば作り直せる）
+/test/out/
+/test/host_test
+/test/host_test.dSYM/
