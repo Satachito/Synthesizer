@@ -169,3 +169,7 @@ cd test && c++ -std=c++17 -O2 -I.. host_test.cpp -o host_test && ./host_test out
 ```
 
 機種を足すときは、`synth_params.h` の `MODELS` に 1 行と初期の音色、`web_ui.h` の `PANELS` につまみの並びを足す。
+
+## ライセンス
+
+MIT License。[LICENSE](LICENSE) を参照。
