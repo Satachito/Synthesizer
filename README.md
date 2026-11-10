@@ -136,6 +136,19 @@ arduino-cli upload --fqbn rp2040:rp2040:rpipico2w:opt=Optimize2 -p /Volumes/RP23
 
 ## MIDI
 
+### 機器名
+
+USB でつなぐと、ドライバーなしの USB-MIDI 機器として見える。アプリで出力先を選ぶときの名前:
+
+| 見える場所 | 名前 |
+|---|---|
+| Mac の MIDI の出力先（DAW やアプリの一覧） | `Pico 2W virtual-cable` |
+| USB 機器としての製品名 | `Pico 2W`（メーカー名 Raspberry Pi） |
+
+DIN の MIDI IN は機器名がなく、つないだ鍵盤やシーケンサーからそのまま受ける。
+
+### 受けるメッセージ
+
 チャンネルは見ない（どのチャンネルでも鳴る）。
 
 | メッセージ | 動き |
@@ -151,6 +164,38 @@ arduino-cli upload --fqbn rp2040:rp2040:rpipico2w:opt=Optimize2 -p /Volumes/RP23
 | CC 76 / 77 | LFO の速さ / ビブラートの深さ |
 | CC 91 / 93 | エコーの量 / コーラス |
 | CC 120 / 123 | 全部の音を止める |
+
+## アプリ
+
+名前は 2026-11 時点の記憶によるもので、配布状況や価格は確かめていない。
+
+### 弾くためのアプリ（MIDI を送る側）
+
+| | アプリ | 用途 |
+|---|---|---|
+| Mac | VMPK（Virtual MIDI Piano Keyboard） | 画面の鍵盤と PC のキーボードで弾く。無料 |
+| Mac | MIDI Monitor（Snoize） | 送受信している MIDI を見る。確認用。無料 |
+| Mac | Reaper、Logic Pro、Ableton Live | 外部 MIDI トラックで打ち込んで鳴らす |
+| iPad | AUM | 画面の鍵盤から外部へ MIDI を送る |
+| iPad | Xequence 2、Cubasis、Logic Pro for iPad | 打ち込んで鳴らす |
+
+- GarageBand（Mac / iPad）は外部の MIDI 機器へ送れないので使えない。
+- iPad は USB-C でつなぐ（iPad では未確認）。Wi-Fi と USB は同時に使えるので、Wi-Fi の画面でつまみを操作しながら USB-MIDI のアプリで弾ける。
+- アプリなしでも、Wi-Fi の画面の鍵盤で音は出る。HTTP 経由なので MIDI より反応が遅い。
+
+### 聴き比べ用（同じ楽器を再現しているソフトシンセ）
+
+| 機種 | アプリ |
+|---|---|
+| MINI | Moog「Minimoog Model D」（Mac / iPad）、Arturia「Mini V」 |
+| ACID | Roland Cloud「TB-303」 |
+| JUNO | Roland Cloud「JUNO-106」、TAL「TAL-U-NO-LX」（Juno-60） |
+| PRO-5 | Arturia「Prophet-5 V」、u-he「Diva」 |
+| MS | KORG「iMS-20」（iPad）、KORG Collection「MS-20」（Mac） |
+| SEM | Arturia「SEM V」 |
+| STRINGS | Arturia「Solina V」 |
+
+これらは回路の細部まで計算していて PC の CPU を前提にしている。Pico Synth は 150MHz のマイコンで 6〜8 音を出すために計算を簡略化しているので、フィルターの鳴り方などは同じにはならない。
 
 ## ファイル
 
