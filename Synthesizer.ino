@@ -1,6 +1,7 @@
 /*
   Synthesizer — Raspberry Pi Pico 2 W のオールドシンセ風シンセサイザー
   機種を切り替えて使う（MINI / ACID / JUNO / PRO-5 / MS / SEM / STRINGS）。鍵盤は MIDI、つまみは Wi-Fi の画面
+  作った音はプリセット（32 個）に保存し、MIDI のプログラムチェンジか押しボタンで呼び出す
 
   ビルド:
     arduino-cli compile --fqbn rp2040:rp2040:rpipico2w:opt=Optimize2 .
@@ -13,6 +14,7 @@
                          裏のジャンパー: H1 / H2 / H4 = L、H3 = H
     MIDI IN（DIN）       フォトカプラ H11L1M の出力（4 番）-> GP5（物理 7）。UART1 の RX、31250bps
                          電源とプルアップは 3V3(OUT)（物理 36）から。基板の配置は README.md
+    押しボタン（任意）   GP6（物理 9）- GND = 次のプリセット、GP7（物理 10）- GND = 前のプリセット
     USB                  PC や iPad につなぐと USB-MIDI 機器として見える（Mac での名前は "Pico 2W virtual-cable"）
 
   Wi-Fi: アクセスポイント "Synth-XXXX" につないで http://192.168.42.1/ を開く（何を開いてもここに来る）
@@ -36,6 +38,8 @@ const uint8_t PIN_I2S_LCK = 0;  // LCK, BCK の順に隣り合わせ
 const uint8_t PIN_I2S_DIN = 2;
 const uint8_t PIN_MIDI_TX = 4;  // 使わないが UART1 の TX として確保される
 const uint8_t PIN_MIDI_RX = 5;
+const uint8_t PIN_BTN_NEXT = 6;  // 押しボタン（GND に落とす）。次のプリセットへ。つながなくてもよい
+const uint8_t PIN_BTN_PREV = 7;  // 前のプリセットへ
 const uint8_t PIN_SMPS_MODE = 65;  // Wi-Fi チップの GPIO1 = 電源回路のモード切り替え（HIGH で PWM モード = ノイズが減る）
 
 const char *WIFI_SSID_BASE = "Synth";
@@ -52,6 +56,8 @@ int curModel = 0;
 volatile bool engineReady = false;
 volatile uint32_t loadPct = 0, loadPeakPct = 0;  // Core1 が書く
 uint32_t midiCount = 0;
+int curPreset = -1;   // 最後に呼び出した / 保存したプリセット。-1 = なし
+bool dirty = false;   // 呼び出したあとでつまみを動かした
 
 // ---------- 音色 ----------
 void setParam(int id, float v) {
@@ -61,6 +67,7 @@ void setParam(int id, float v) {
   else v = constrain(v, 0.0f, 1.0f);
   synth.P[id] = v;
   synth.gen = synth.gen + 1;
+  dirty = true;
 }
 
 void setModel(int m) {
@@ -70,46 +77,109 @@ void setModel(int m) {
   memcpy(synth.P, patches[m], sizeof(synth.P));
   synth.model = m;
   synth.gen = synth.gen + 1;
+  dirty = true;
 }
 
-// 保存（フラッシュ）。先頭に印、次に機種番号、そのあと 機種 x パラメータ を 16bit で並べる
-const uint32_t STORE_MAGIC = 0x53594E00u + NP * 16 + N_MODELS;  // 並びが変わったら読まない
-const int STORE_SIZE = 8 + N_MODELS * NP * 2;
+// ---------- プリセット ----------
+// 機種と全パラメータを名前つきで 32 個までフラッシュに残す。MIDI のプログラムチェンジ 0〜31 で呼び出す
+Preset presets[N_PRESETS];
+const uint32_t STORE_MAGIC = 0x50524500u + NP * 16 + N_MODELS;  // 並びが変わったら読まない
+const int STORE_SIZE = 4 + sizeof(presets);                     // arduino-pico の EEPROM は 4096 バイトまで
 
+void presetPack(Preset &pr, int model, const float *src) {
+  pr.used = 1;
+  pr.model = model;
+  for (int i = 0; i < NP; i++) pr.v[i] = PARAM_INFO[i].steps ? (uint16_t)src[i] : (uint16_t)(src[i] * 10000.0f + 0.5f);
+}
+
+void presetUnpack(const Preset &pr, float *dst) {
+  for (int i = 0; i < NP; i++) {
+    int steps = PARAM_INFO[i].steps;
+    float v = steps ? (float)pr.v[i] : pr.v[i] / 10000.0f;
+    dst[i] = v <= (steps ? steps - 1 : 1.0f) ? v : PARAM_INFO[i].def;
+  }
+}
+
+// 工場出荷時: 1〜7 番に各機種の初期の音色を入れる
+void presetFactory() {
+  memset(presets, 0, sizeof(presets));
+  float tmp[NP];
+  for (int m = 0; m < N_MODELS && m < N_PRESETS; m++) {
+    modelDefaults(m, tmp);
+    presetPack(presets[m], m, tmp);
+    strlcpy(presets[m].name, MODELS[m].name, sizeof(presets[m].name));
+  }
+}
+
+bool presetLoad(int i) {
+  if (i < 0 || i >= N_PRESETS || !presets[i].used || presets[i].model >= N_MODELS) return false;
+  memcpy(patches[curModel], synth.P, sizeof(synth.P));
+  curModel = presets[i].model;
+  presetUnpack(presets[i], patches[curModel]);
+  memcpy(synth.P, patches[curModel], sizeof(synth.P));
+  synth.model = curModel;
+  synth.gen = synth.gen + 1;
+  curPreset = i;
+  dirty = false;
+  return true;
+}
+
+void storeCommit() {  // 書き込み中（数十 ms）は音が止まる
+  EEPROM.put(0, STORE_MAGIC);
+  EEPROM.put(4, presets);
+  EEPROM.commit();
+}
+
+// 今の音を i 番に保存する。名前は 23 バイトまで（UTF-8 の文字の途中では切らない）
+bool presetSave(int i, const String &name) {
+  if (i < 0 || i >= N_PRESETS) return false;
+  Preset &pr = presets[i];
+  presetPack(pr, curModel, synth.P);
+  size_t n = name.length();
+  if (n > sizeof(pr.name) - 1) {
+    n = sizeof(pr.name) - 1;
+    while (n > 0 && ((uint8_t)name[n] & 0xc0) == 0x80) n--;
+  }
+  memcpy(pr.name, name.c_str(), n);
+  pr.name[n] = 0;
+  if (!n) strlcpy(pr.name, MODELS[curModel].name, sizeof(pr.name));
+  storeCommit();
+  curPreset = i;
+  dirty = false;
+  return true;
+}
+
+bool presetDelete(int i) {
+  if (i < 0 || i >= N_PRESETS) return false;
+  memset(&presets[i], 0, sizeof(Preset));
+  storeCommit();
+  if (curPreset == i) curPreset = -1;
+  return true;
+}
+
+// 入っているプリセットを dir（+1 / -1）の向きに探して呼び出す。端まで行ったら反対側へ回る
+void presetStep(int dir) {
+  int i = curPreset < 0 ? (dir > 0 ? -1 : 0) : curPreset;
+  for (int n = 0; n < N_PRESETS; n++) {
+    i = (i + dir + N_PRESETS) % N_PRESETS;
+    if (presetLoad(i)) return;
+  }
+}
+
+// 起動時: フラッシュから読み、いちばん番号の小さいプリセットで始める
 void storeLoad() {
   for (int m = 0; m < N_MODELS; m++) modelDefaults(m, patches[m]);
   EEPROM.begin(STORE_SIZE);
   uint32_t magic;
   EEPROM.get(0, magic);
-  if (magic == STORE_MAGIC) {
-    int m0 = EEPROM.read(4);
-    if (m0 < N_MODELS) curModel = m0;
-    for (int m = 0; m < N_MODELS; m++)
-      for (int i = 0; i < NP; i++) {
-        uint16_t w;
-        EEPROM.get(8 + (m * NP + i) * 2, w);
-        float v = PARAM_INFO[i].steps ? (float)w : w / 10000.0f;
-        float hi = PARAM_INFO[i].steps ? PARAM_INFO[i].steps - 1 : 1.0f;
-        if (v <= hi) patches[m][i] = v;
-      }
-  }
-  memcpy(synth.P, patches[curModel], sizeof(synth.P));
-  synth.model = curModel;
+  if (magic == STORE_MAGIC) EEPROM.get(4, presets);
+  else presetFactory();
+  for (int i = 0; i < N_PRESETS; i++) presets[i].name[sizeof(presets[i].name) - 1] = 0;
+  memcpy(synth.P, patches[0], sizeof(synth.P));
+  synth.model = curModel = 0;
   synth.gen = synth.gen + 1;
-}
-
-// 全機種の音色と、今どの機種かを保存する。書き込み中（数十 ms）は音が止まる
-void storeSave() {
-  memcpy(patches[curModel], synth.P, sizeof(synth.P));
-  EEPROM.put(0, STORE_MAGIC);
-  EEPROM.write(4, curModel);
-  for (int m = 0; m < N_MODELS; m++)
-    for (int i = 0; i < NP; i++) {
-      float v = patches[m][i];
-      uint16_t w = PARAM_INFO[i].steps ? (uint16_t)v : (uint16_t)(v * 10000.0f + 0.5f);
-      EEPROM.put(8 + (m * NP + i) * 2, w);
-    }
-  EEPROM.commit();
+  for (int i = 0; i < N_PRESETS; i++)
+    if (presetLoad(i)) break;
 }
 
 // ---------- MIDI ----------
@@ -120,7 +190,7 @@ void midiMessage(uint8_t status, uint8_t d1, uint8_t d2) {
     case 0x90: synth.post(Synth::EV_ON, d1, d2); break;
     case 0x80: synth.post(Synth::EV_OFF, d1); break;
     case 0xe0: synth.post(Synth::EV_BEND, d1, d2); break;
-    case 0xc0: setModel(d1 % N_MODELS); break;  // プログラムチェンジで機種を切り替える
+    case 0xc0: presetLoad(d1); break;  // プログラムチェンジ 0〜31 = プリセット 1〜32。空きの番号は無視
     case 0xb0:
       if (d1 == 1) synth.post(Synth::EV_MODW, d2);
       else if (d1 == 64) synth.post(Synth::EV_SUS, d2);
@@ -188,7 +258,37 @@ String stateJson() {
   s += synth.activeVoices;
   s += ",\"midi\":";
   s += midiCount;
+  s += ",\"pr\":";
+  s += curPreset;
+  s += ",\"dirty\":";
+  s += dirty ? 1 : 0;
   s += "}";
+  return s;
+}
+
+// プリセットの一覧。入っている番号は [名前, 機種番号]、空きは null
+String presetsJson() {
+  String s;
+  s.reserve(1200);
+  s += "{\"pr\":";
+  s += curPreset;
+  s += ",\"list\":[";
+  for (int i = 0; i < N_PRESETS; i++) {
+    if (i) s += ',';
+    if (!presets[i].used) {
+      s += "null";
+      continue;
+    }
+    s += "[\"";
+    for (const char *c = presets[i].name; *c; c++) {  // JSON に入れられない文字をよける
+      if (*c == '"' || *c == '\\') s += '\\';
+      if ((uint8_t)*c >= 0x20) s += *c;
+    }
+    s += "\",";
+    s += presets[i].model;
+    s += "]";
+  }
+  s += "]}";
   return s;
 }
 
@@ -258,14 +358,36 @@ void webInit() {
     synth.post(Synth::EV_ALLOFF);
     server.send(200, "text/plain", "ok");
   });
-  server.on("/api/save", []() {
-    storeSave();
+  server.on("/api/presets", []() {
+    server.send(200, "application/json", presetsJson());
+  });
+  server.on("/api/preset/load", []() {
+    if (!presetLoad(server.arg("i").toInt())) {
+      server.send(404, "text/plain", "empty");
+      return;
+    }
     sendState();
   });
-  // 今の機種を工場出荷時の音色に戻す（保存はしない）
+  // 今の音を i 番に保存する（上書き）
+  server.on("/api/preset/save", []() {
+    if (!server.hasArg("i") || !presetSave(server.arg("i").toInt(), server.arg("name"))) {
+      server.send(400, "text/plain", "bad slot");
+      return;
+    }
+    server.send(200, "application/json", presetsJson());
+  });
+  server.on("/api/preset/delete", []() {
+    if (!server.hasArg("i") || !presetDelete(server.arg("i").toInt())) {
+      server.send(400, "text/plain", "bad slot");
+      return;
+    }
+    server.send(200, "application/json", presetsJson());
+  });
+  // 今の機種を工場出荷時の音色に戻す（プリセットは書き換えない）
   server.on("/api/init", []() {
     modelDefaults(curModel, synth.P);
     synth.gen = synth.gen + 1;
+    dirty = true;
     sendState();
   });
   server.onNotFound([]() {  // キャプティブポータル: 何を開いても操作画面へ
@@ -307,6 +429,8 @@ void setup() {
   pinMode(PIN_SMPS_MODE, OUTPUT);
   digitalWrite(PIN_SMPS_MODE, HIGH);
   pinMode(LED_BUILTIN, OUTPUT);
+  pinMode(PIN_BTN_NEXT, INPUT_PULLUP);
+  pinMode(PIN_BTN_PREV, INPUT_PULLUP);
 }
 
 void loop() {
@@ -315,11 +439,24 @@ void loop() {
   server.handleClient();
   midiPoll();
 
+  // 押しボタン: 押した瞬間に次 / 前のプリセットへ（30ms のチャタリングよけ）
+  static bool btnWas[2] = { false, false };
+  static uint32_t btnAt[2] = { 0, 0 };
+  for (int b = 0; b < 2; b++) {
+    bool down = digitalRead(b ? PIN_BTN_PREV : PIN_BTN_NEXT) == LOW;
+    if (down != btnWas[b] && millis() - btnAt[b] > 30) {
+      btnWas[b] = down;
+      btnAt[b] = millis();
+      if (down) presetStep(b ? -1 : 1);
+    }
+  }
+
   // 診断: 1 秒ごとに負荷を USB シリアルに出す
   static uint32_t lastRep = 0;
   if (millis() - lastRep >= 1000) {
     lastRep = millis();
-    Serial.printf("model %s voices %d load %lu%% peak %lu%%\n", MODELS[curModel].name, (int)synth.activeVoices, (unsigned long)loadPct, (unsigned long)loadPeakPct);
+    Serial.printf("preset %d%s model %s voices %d load %lu%% peak %lu%%\n", curPreset + 1, dirty ? "*" : "", MODELS[curModel].name, (int)synth.activeVoices, (unsigned long)loadPct,
+                  (unsigned long)loadPeakPct);
   }
 
   // LED: 音が出ている間は点灯。Wi-Fi チップ経由なので変わったときだけ書く

@@ -175,3 +175,13 @@ static inline void modelDefaults(int m, float *dst) {
   for (int i = 0; i < NP; i++) dst[i] = PARAM_INFO[i].def;
   for (const PatchItem *it = MODELS[m].patch; it->id != 255; it++) dst[it->id] = it->v;
 }
+
+// ---- プリセット（フラッシュに残す形）----
+// .ino の中で定義すると Arduino が自動で作る関数宣言より後ろになってしまうので、ここに置く
+const int N_PRESETS = 32;
+struct Preset {
+  uint8_t used;      // 1 = 入っている
+  uint8_t model;
+  char name[24];     // UTF-8、終端つき
+  uint16_t v[NP];    // つまみは x10000、切り替えはそのままの整数
+};

@@ -56,6 +56,10 @@ body.juno .sec:nth-child(3n) h2{border-color:#e0a030}
 .bk{background:#151515;height:60%;z-index:2}
 .wk.on{background:#e8b060}.bk.on{background:#a06020}
 footer{padding:8px 14px;color:#777;font-size:11px}
+#pbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:6px 12px;background:#161616;color:#bbb;border-top:1px solid #333}
+#pbar select,#pbar input{font:inherit;color:#eee;background:#222;border:1px solid #555;border-radius:3px;padding:6px 8px}
+#pbar select{min-width:190px}#pbar input{width:150px}
+#pmsg{font-size:11px;color:#e8b060}
 #err{display:none;background:#a00;color:#fff;padding:4px 12px;font-size:12px}
 </style>
 </head>
@@ -64,8 +68,13 @@ footer{padding:8px 14px;color:#777;font-size:11px}
   <h1>PICO SYNTH</h1>
   <div id="tabs"></div>
   <span id="stat"><span id="led"></span><span id="st"></span></span>
-  <button id="bsave">保存</button><button id="binit">初期化</button><button id="bpanic">音を止める</button>
+  <button id="binit">初期化</button><button id="bpanic">音を止める</button>
 </header>
+<div id="pbar">
+  <span>プリセット</span><button id="pprev">◀</button><select id="psel"></select><button id="pnext">▶</button>
+  <input id="pname" maxlength="23" placeholder="名前"><button id="psave">この番号に保存</button><button id="pdel">削除</button>
+  <span id="pmsg"></span>
+</div>
 <div id="err">本体と通信できません</div>
 <div id="wrap">
   <div id="name"><b></b><span></span></div>
@@ -76,7 +85,7 @@ footer{padding:8px 14px;color:#777;font-size:11px}
     <span>鍵盤は下のほうを押すほど強く鳴る。PC のキーボードは A S D F … の段</span></div>
   <div id="kb"></div>
 </div>
-<footer>つまみは上下にドラッグ。変更は「保存」を押すまで電源を切ると消える。MIDI のプログラムチェンジ 0〜6 でも機種が切り替わる。</footer>
+<footer>つまみは上下にドラッグ。作った音はプリセットの番号を選んで「この番号に保存」。保存しないと電源を切ったときに消える。ライブでは MIDI のプログラムチェンジ（0〜31 = プリセット 1〜32）か本体のボタンで呼び出す。電源を入れるといちばん小さい番号で始まる。</footer>
 <script>
 const LBL={o1wave:'WAVE',o1oct:'OCTAVE',o1lvl:'LEVEL',o2wave:'WAVE',o2oct:'OCTAVE',o2semi:'SEMI',o2det:'DETUNE',o2lvl:'LEVEL',
 o3wave:'WAVE',o3oct:'OCTAVE',o3det:'DETUNE',o3lvl:'LEVEL',pw:'PW',pwm:'PWM',noise:'NOISE',ring:'RING',pmenv:'FILT ENV',pmosc:'OSC B',
@@ -124,6 +133,7 @@ const PANELS={
  ['ENVELOPE',[['aa','CRESCENDO'],['ar','SUSTAIN']]],['ENSEMBLE',['cho']],['VIBRATO',['lrate',['lpitch','DEPTH']]],['OUTPUT',[...ECHO,'vol']]]}
 };
 const $=q=>document.querySelector(q),el=(t,c,p)=>{const e=document.createElement(t);if(c)e.className=c;if(p)p.appendChild(e);return e};
+let PR={pr:-1,list:[]},psel=0;
 let M,cur=-1,idx={},vals={},ctl={},touched={},pend={},base=48,lastMidi=0,panel;
 
 // 通信は 1 本の列にして順番を守る（鍵盤のオンとオフが入れ替わらないように）
@@ -168,7 +178,9 @@ function apply(s){
  if(sw)build();
  for(const k in ctl)ctl[k](vals[k]);
  $('#st').textContent='CPU '+s.load+'% (瞬間最大 '+s.peak+'%)  発音 '+s.voices;
- $('#led').classList.toggle('on',s.midi!=lastMidi);lastMidi=s.midi}
+ $('#led').classList.toggle('on',s.midi!=lastMidi);lastMidi=s.midi;
+ if(s.pr!=PR.pr){PR.pr=s.pr;if(s.pr>=0)psel=s.pr;drawPresets()}
+ $('#pmsg').textContent=s.dirty?(s.pr>=0?'＊ '+(s.pr+1)+' 番から変更あり（未保存）':'＊ 未保存'):''}
 const getState=u=>req(u).then(r=>r.json()).then(apply).catch(()=>{});
 
 // ---- 鍵盤 ----
@@ -195,14 +207,32 @@ onkeyup=e=>{if(e.key in pcHeld){nOff(pcHeld[e.key]);delete pcHeld[e.key]}};
 function oct(d){const b=base+d;if(b<12||b>72)return;base=b;buildKb()}
 $('#od').onclick=()=>oct(-12);$('#ou').onclick=()=>oct(12);
 
+// ---- プリセット ----
+const two=n=>(n<10?'0':'')+n;
+function drawPresets(){
+ const sel=$('#psel');sel.innerHTML='';
+ for(let i=0;i<PR.list.length;i++){const e=PR.list[i],o=el('option','',sel);o.value=i;
+  o.textContent=two(i+1)+'  '+(e?(M.models[e[1]].name==e[0]?e[0]:e[0]+'  ['+M.models[e[1]].name+']'):'（空き）')+(i==PR.pr?'  ●':'')}
+ sel.value=psel;const e=PR.list[psel];$('#pname').value=e?e[0]:'';$('#pdel').disabled=!e}
+const setPresets=p=>{PR=p;if(p.pr>=0)psel=p.pr;drawPresets()};
+const getPresets=u=>req(u).then(r=>r.json()).then(setPresets).catch(()=>{});
+function loadPreset(i){psel=i;touched={};pend={};getState('/api/preset/load?i='+i)}
+$('#psel').onchange=e=>{psel=+e.target.value;if(PR.list[psel])loadPreset(psel);else drawPresets()};
+function stepPreset(d){const n=PR.list.length;let i=psel;for(let k=0;k<n;k++){i=(i+d+n)%n;if(PR.list[i]){loadPreset(i);return}}}
+$('#pprev').onclick=()=>stepPreset(-1);$('#pnext').onclick=()=>stepPreset(1);
+$('#psave').onclick=()=>{const e=PR.list[psel],name=$('#pname').value.trim();
+ if(e&&!confirm((psel+1)+' 番「'+e[0]+'」に上書きしますか？'))return;
+ const ks=Object.keys(pend);if(ks.length){req('/api/set?'+ks.map(k=>k+'='+(+(+pend[k]).toFixed(4))).join('&'));pend={}}
+ getPresets('/api/preset/save?i='+psel+'&name='+encodeURIComponent(name)).then(()=>getState('/api/state'))};
+$('#pdel').onclick=()=>{const e=PR.list[psel];if(e&&confirm((psel+1)+' 番「'+e[0]+'」を削除しますか？'))getPresets('/api/preset/delete?i='+psel)};
+
 // ---- 起動 ----
-$('#bsave').onclick=()=>getState('/api/save');
 $('#binit').onclick=()=>{touched={};pend={};getState('/api/init')};
 $('#bpanic').onclick=()=>req('/api/panic');
 req('/api/meta').then(r=>r.json()).then(m=>{
  M=m;m.keys.forEach((k,i)=>idx[k]=i);document.title=m.ssid;
  m.models.forEach((x,i)=>{const b=el('button','',$('#tabs'));b.textContent=x.name;b.onclick=()=>{touched={};pend={};getState('/api/model?m='+i)}});
- getState('/api/state');
+ getPresets('/api/presets');getState('/api/state');
  // つまみの変更は 40ms ごとにまとめて送る
  setInterval(()=>{const ks=Object.keys(pend);if(!ks.length||qlen>1)return;
   const u='/api/set?'+ks.map(k=>k+'='+(+(+pend[k]).toFixed(4))).join('&');pend={};req(u)},40);
