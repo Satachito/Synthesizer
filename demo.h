@@ -73,7 +73,9 @@ static_assert(sizeof(DEMO_PATTERNS) / sizeof(DEMO_PATTERNS[0]) == sizeof(MODELS)
 
 class DemoPlayer {
 public:
-  volatile bool on = false;  // Core0 が書く
+  volatile bool on = false;    // Core0 が書く
+  volatile bool tour = false;  // Core0 が書く。true = 1 フレーズ弾いたら止まって phrasesDone を増やす（Core0 が次の機種へ切り替える）
+  volatile uint32_t phrasesDone = 0;  // Core1 が書く
 
   // Core1: 毎ブロック、synth.render() の直前に呼ぶ
   SYNTH_RAM void tick(Synth &s) {
@@ -97,6 +99,7 @@ public:
         i++;
       }
     }
+    if (holding) return;  // 全機種デモ: 弾き終わって、Core0 が次の機種に切り替えるのを待っている
     // 押す
     while (idx < p.count && (float)p.notes[idx].step * stepBlocks <= t) {
       const DemoNote &n = p.notes[idx++];
@@ -111,6 +114,10 @@ public:
     if (t >= (float)p.steps * stepBlocks) {  // 1 周したら頭へ
       t -= (float)p.steps * stepBlocks;
       idx = 0;
+      if (tour && ++loops >= loopsPerPhrase) {
+        holding = true;
+        phrasesDone = phrasesDone + 1;
+      }
     }
   }
 
@@ -118,13 +125,20 @@ private:
   void start(int m) {
     pm = m;
     running = true;
-    t = 0.0f;
+    // 全機種デモ: 画面が次の機種に切り替わるのを待ってから弾き始める（1 秒）
+    t = tour ? -TOUR_LEAD_SEC * Synth::SR / (float)Synth::BLOCK : 0.0f;
     idx = 0;
     stepBlocks = 60.0f / (float)DEMO_PATTERNS[m].bpm / 4.0f * Synth::SR / (float)Synth::BLOCK;
+    // 全機種デモで 1 機種あたりの長さをそろえる: 3 秒に満たない短いフレーズは 2 回弾く
+    float sec = (float)DEMO_PATTERNS[m].steps * 15.0f / (float)DEMO_PATTERNS[m].bpm;
+    loopsPerPhrase = sec < 3.0f ? 2 : 1;
+    loops = 0;
+    holding = false;
   }
   SYNTH_RAM void stop(Synth &s) {
     if (running) s.eventNow(Synth::EV_ALLOFF);
     running = false;
+    holding = false;
     nAct = 0;
   }
 
@@ -133,8 +147,10 @@ private:
     int left;  // あと何ブロックで離すか
   };
   static constexpr int MAXACT = 16;
+  static constexpr float TOUR_LEAD_SEC = 1.0f;
   Active act[MAXACT];
   int nAct = 0, pm = 0, idx = 0;
-  bool running = false;
+  bool running = false, holding = false;
+  int loops = 0, loopsPerPhrase = 1;
   float t = 0.0f, stepBlocks = 1.0f;
 };

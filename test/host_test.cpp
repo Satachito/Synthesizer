@@ -147,5 +147,42 @@ int main(int argc, char **argv) {
            (int)synth.activeVoices, bad ? "  <-- CHECK" : "");
     if (bad) fail = 1;
   }
+  // 全機種デモ: 1 フレーズごとに次の機種へ。Core0 の tourPoll() と同じく、弾き終わって 0.6 秒後に切り替える
+  {
+    int m = 0;
+    modelDefaults(m, synth.P);
+    synth.model = m;
+    synth.update();
+    demo.tour = true;
+    demo.on = true;
+    std::vector<int16_t> out;
+    int16_t buf[Synth::BLOCK * 2];
+    uint32_t seen = demo.phrasesDone;
+    int waitBlocks = -1, switches = 0;
+    const int wait06 = (int)(0.6f * Synth::SR / Synth::BLOCK);
+    printf("tour:");
+    for (int b = 0; b < (int)(60.0f * Synth::SR / Synth::BLOCK) && switches < N_MODELS; b++) {
+      demo.tick(synth);
+      synth.render(buf);
+      out.insert(out.end(), buf, buf + Synth::BLOCK * 2);
+      if (demo.phrasesDone != seen) { seen = demo.phrasesDone; waitBlocks = wait06; }
+      if (waitBlocks >= 0 && waitBlocks-- == 0) {
+        m = (m + 1) % N_MODELS;
+        modelDefaults(m, synth.P);
+        synth.model = m;
+        synth.update();
+        switches++;
+        printf(" %.1fs->%s", (double)b * Synth::BLOCK / Synth::SR, MODELS[m].name);
+      }
+    }
+    printf("\n");
+    demo.on = false;
+    demo.tour = false;
+    demo.tick(synth);
+    Stat st;
+    run(out, 1.0f, st);
+    writeWav(dir + "/demo_tour.wav", out);
+    if (switches < N_MODELS) { printf("tour: did not go round  <-- CHECK\n"); fail = 1; }
+  }
   return fail;
 }

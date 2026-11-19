@@ -21,7 +21,7 @@ header{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 12px;b
 header h1{margin:0;font-size:15px;letter-spacing:.25em;font-weight:700}
 #tabs{display:flex;flex-wrap:wrap;gap:4px;flex:1}
 button{font:inherit;color:inherit;background:#222;border:1px solid #555;border-radius:3px;padding:6px 10px;cursor:pointer;letter-spacing:.08em}
-#bdemo.on{background:#c33;border-color:#c33;color:#fff;font-weight:700}
+#bdemo.on,#btour.on{background:#c33;border-color:#c33;color:#fff;font-weight:700}
 #tabs button.on{background:#e8e0c8;color:#000;border-color:#e8e0c8;font-weight:700}
 #stat{font-size:11px;color:#999;white-space:nowrap;font-variant-numeric:tabular-nums}
 #led{display:inline-block;width:8px;height:8px;border-radius:50%;background:#333;margin-right:4px;vertical-align:middle}
@@ -69,25 +69,52 @@ footer{padding:8px 14px;color:#777;font-size:11px}
   <h1>PICO SYNTH</h1>
   <div id="tabs"></div>
   <span id="stat"><span id="led"></span><span id="st"></span></span>
-  <button id="bdemo">デモ</button><button id="binit">初期化</button><button id="bpanic">音を止める</button>
+  <button id="bdemo"></button><button id="btour"></button><button id="binit" data-t="init"></button><button id="bpanic" data-t="panic"></button><button id="blang"></button>
 </header>
 <div id="pbar">
-  <span>プリセット</span><button id="pprev">◀</button><select id="psel"></select><button id="pnext">▶</button>
-  <input id="pname" maxlength="23" placeholder="名前"><button id="psave">この番号に保存</button><button id="pdel">削除</button>
+  <span data-t="preset"></span><button id="pprev">◀</button><select id="psel"></select><button id="pnext">▶</button>
+  <input id="pname" maxlength="23" data-tp="name"><button id="psave" data-t="save"></button><button id="pdel" data-t="del"></button>
   <span id="pmsg"></span>
 </div>
-<div id="err">本体と通信できません</div>
+<div id="err" data-t="err"></div>
 <div id="wrap">
   <div id="name"><b></b><span></span></div>
   <div id="panel"></div>
 </div>
 <div id="kbwrap">
   <div id="kbbar"><button id="od">◀ OCT</button><span id="ol"></span><button id="ou">OCT ▶</button>
-    <span>鍵盤は下のほうを押すほど強く鳴る。PC のキーボードは A S D F … の段</span></div>
+    <span data-t="kbhint"></span></div>
   <div id="kb"></div>
 </div>
-<footer>「デモ」を押すと、今の機種に合ったフレーズを今の音色で繰り返す（鍵盤を弾くと止まる）。つまみは上下にドラッグ。作った音はプリセットの番号を選んで「この番号に保存」。保存しないと電源を切ったときに消える。ライブでは MIDI のプログラムチェンジ（0〜31 = プリセット 1〜32）か本体のボタンで呼び出す。電源を入れるといちばん小さい番号で始まる。</footer>
+<footer data-t="foot"></footer>
 <script>
+// ---- 言語 ----（日本語 / English。選んだ言語はこのブラウザに覚えておく）
+const T={
+ja:{init:'初期化',panic:'音を止める',lang:'EN',preset:'プリセット',name:'名前',save:'この番号に保存',del:'削除',
+ err:'本体と通信できません',kbhint:'鍵盤は下のほうを押すほど強く鳴る。PC のキーボードは A S D F … の段',
+ foot:'「デモ」を押すと、今の機種に合ったフレーズを今の音色で繰り返す。「全機種デモ」は 1 フレーズごとに次の機種へ移る（どちらも鍵盤を弾くと止まる）。つまみは上下にドラッグ。作った音はプリセットの番号を選んで「この番号に保存」。保存しないと電源を切ったときに消える。ライブでは MIDI のプログラムチェンジ（0〜31 = プリセット 1〜32）か本体のボタンで呼び出す。電源を入れるといちばん小さい番号で始まる。',
+ demo:'デモ',tour:'全機種デモ',demoStop:'デモ停止',empty:'（空き）',peak:'瞬間最大',voices:'発音',
+ dirtyFrom:n=>'＊ '+n+' 番から変更あり（未保存）',dirty:'＊ 未保存',
+ overwrite:(n,x)=>n+' 番「'+x+'」に上書きしますか？',remove:(n,x)=>n+' 番「'+x+'」を削除しますか？',
+ sub:{'MINI':'3 VCO・24dB ラダーフィルター・モノフォニック','ACID':'1 VCO・レゾナンスの強いフィルター。強く弾くとアクセント、重ねて弾くとスライド',
+  'JUNO':'DCO + サブオシレーター・コーラス・6 音ポリ','PRO-5':'2 VCO・ポリモジュレーション・5 音ポリ',
+  'MS':'2 VCO・リングモジュレーター・発振する HPF と LPF・モノフォニック','SEM':'2 VCO・12dB マルチモードフィルター・4 音ポリ',
+  'STRINGS':'ストリングマシン・アンサンブル・8 音ポリ'}},
+en:{init:'Init',panic:'All notes off',lang:'日本語',preset:'Preset',name:'Name',save:'Save to this slot',del:'Delete',
+ err:'Cannot reach the synth',kbhint:'Press lower on a key to play louder. Computer keyboard: the A S D F … row',
+ foot:'Press "Demo" to loop a phrase suited to the current model with the current sound; "Tour all" plays one phrase per model and moves on to the next (playing a key stops either). Drag knobs up and down. To keep a sound, pick a preset slot and press "Save to this slot"; unsaved changes are lost at power-off. On stage, recall presets with MIDI program change (0–31 = presets 1–32) or the buttons on the unit. At power-on the lowest-numbered preset is loaded.',
+ demo:'Demo',tour:'Tour all',demoStop:'Stop demo',empty:'(empty)',peak:'peak',voices:'voices',
+ dirtyFrom:n=>'* edited from preset '+n+' (not saved)',dirty:'* not saved',
+ overwrite:(n,x)=>'Overwrite preset '+n+' "'+x+'"?',remove:(n,x)=>'Delete preset '+n+' "'+x+'"?',
+ sub:{'MINI':'3 VCOs, 24 dB ladder filter, monophonic','ACID':'1 VCO, resonant filter. Play hard for accent, overlap notes to slide',
+  'JUNO':'DCO + sub oscillator, chorus, 6 voices','PRO-5':'2 VCOs, poly-mod, 5 voices',
+  'MS':'2 VCOs, ring modulator, self-oscillating HPF and LPF, monophonic','SEM':'2 VCOs, 12 dB multimode filter, 4 voices',
+  'STRINGS':'String machine with ensemble, 8 voices'}}};
+let lang='ja';
+try{lang=localStorage.getItem('lang')||''}catch(e){lang=''}
+if(lang!='ja'&&lang!='en')lang=/^ja/i.test(navigator.language||'')?'ja':'en';
+const t=k=>T[lang][k];
+
 const LBL={o1wave:'WAVE',o1oct:'OCTAVE',o1lvl:'LEVEL',o2wave:'WAVE',o2oct:'OCTAVE',o2semi:'SEMI',o2det:'DETUNE',o2lvl:'LEVEL',
 o3wave:'WAVE',o3oct:'OCTAVE',o3det:'DETUNE',o3lvl:'LEVEL',pw:'PW',pwm:'PWM',noise:'NOISE',ring:'RING',pmenv:'FILT ENV',pmosc:'OSC B',
 cut:'CUTOFF',res:'RESO',fenv:'ENV',fkbd:'KBD',flfo:'LFO',fmode:'MODE',drive:'DRIVE',hpf:'HPF',hpres:'PEAK',
@@ -98,43 +125,44 @@ const OPTS={o1wave:WV,o2wave:WV,o3wave:WV,o1oct:OC,o2oct:OC,o3oct:OC,lwave:['TRI
 const ENV1=['fa','fd','fs','fr'],ENV2=['aa','ad','as','ar'],ECHO=['dtime','dfb','dmix'];
 // sec: [見出し, [キー または [キー, ラベル], ...]]。link: そのつまみと一緒に動かすパラメータ
 const PANELS={
-'MINI':{skin:'mini',sub:'3 VCO・24dB ラダーフィルター・モノフォニック',sec:[
+'MINI':{skin:'mini',sec:[
  ['OSCILLATOR 1',['o1oct','o1wave']],['OSCILLATOR 2',['o2oct','o2wave','o2det']],['OSCILLATOR 3',['o3oct','o3wave','o3det']],
  ['MIXER',[['o1lvl','OSC 1'],['o2lvl','OSC 2'],['o3lvl','OSC 3'],'noise','drive']],
  ['FILTER',['cut',['res','EMPHASIS'],['fenv','CONTOUR'],'fkbd',...ENV1]],['LOUDNESS CONTOUR',ENV2],
  ['MODULATION',['lrate','lwave','lpitch',['flfo','FILTER']]],['CONTROLLERS',['glide','legato','pw']],['OUTPUT',[...ECHO,'vol']]]},
-'ACID':{skin:'acid',sub:'1 VCO・レゾナンスの強いフィルター。強く弾くとアクセント、重ねて弾くとスライド',sec:[
+'ACID':{skin:'acid',sec:[
  ['VCO',['o1wave',['o1oct','RANGE'],'o1lvl']],
  ['VCF',[['cut','CUT OFF'],['res','RESONANCE'],['fenv','ENV MOD'],'fd','acc']],
  ['SLIDE / VCA',[['glide','SLIDE'],'legato',['ad','DECAY'],'as','ar','drive']],['DELAY',ECHO],['OUTPUT',['vol']]],
  link:{fd:v=>({fr:v})}},
-'JUNO':{skin:'juno',fader:1,sub:'DCO + サブオシレーター・コーラス・6 音ポリ',sec:[
+'JUNO':{skin:'juno',fader:1,sec:[
  ['LFO',['lrate','lwave',['lpitch','PITCH']]],
  ['DCO',[['o1oct','RANGE'],['o1lvl','SAW'],['o2lvl','PULSE'],'pw','pwm',['o3lvl','SUB'],'noise']],
  ['HPF',[['hpf','FREQ']]],['VCF',[['cut','FREQ'],['res','RES'],'fenv','flfo',['fkbd','KYBD']]],
  ['ENV',[['aa','A'],['ad','D'],['as','S'],['ar','R']]],['CHORUS',['cho']],['OUTPUT',['vel','vol']]],
  link:{aa:v=>({fa:v}),ad:v=>({fd:v}),as:v=>({fs:v}),ar:v=>({fr:v}),o1oct:v=>({o2oct:v,o3oct:Math.max(0,v-1)})}},
-'PRO-5':{skin:'pro5',sub:'2 VCO・ポリモジュレーション・5 音ポリ',sec:[
+'PRO-5':{skin:'pro5',sec:[
  ['POLY-MOD',['pmenv','pmosc']],['LFO',['lrate','lwave',['lpitch','FREQ'],['pwm','PW'],['flfo','FILTER']]],
  ['OSCILLATOR A',['o1oct','o1wave','pw']],['OSCILLATOR B',['o2oct','o2wave','o2semi',['o2det','FINE']]],
  ['MIXER',[['o1lvl','OSC A'],['o2lvl','OSC B'],'noise']],
  ['FILTER',['cut','res',['fenv','ENV AMT'],'fkbd',...ENV1]],['AMPLIFIER',ENV2],['OUTPUT',['cho','vel','vol']]]},
-'MS':{skin:'ms',sub:'2 VCO・リングモジュレーター・発振する HPF と LPF・モノフォニック',sec:[
+'MS':{skin:'ms',sec:[
  ['VCO 1',['o1wave','o1oct','pw']],['VCO 2',['o2wave','o2oct',['o2semi','PITCH'],['o2det','FINE']]],
  ['MIXER',[['o1lvl','VCO 1'],['o2lvl','VCO 2'],'ring','noise','drive']],
  ['HIGH PASS FILTER',[['hpf','CUTOFF'],'hpres']],['LOW PASS FILTER',['cut',['res','PEAK'],['fenv','EG'],['flfo','MG'],'fkbd']],
  ['EG 1 (FILTER)',ENV1],['EG 2 (AMP)',ENV2],['MODULATION GENERATOR',['lrate','lwave','lpitch','pwm']],
  ['PORTAMENTO',['glide','legato']],['OUTPUT',[...ECHO,'vol']]]},
-'SEM':{skin:'sem',sub:'2 VCO・12dB マルチモードフィルター・4 音ポリ',sec:[
+'SEM':{skin:'sem',sec:[
  ['VCO 1',['o1oct','o1wave','o1lvl']],['VCO 2',['o2oct','o2wave','o2semi',['o2det','FINE'],'o2lvl']],['PULSE WIDTH',['pw','pwm']],
  ['VCF',['cut','res',['fmode','LP - NOTCH - HP'],'fenv','fkbd','flfo']],['ENV 1 (VCF)',ENV1],['ENV 2 (VCA)',ENV2],
  ['LFO',['lrate','lwave','lpitch']],['OUTPUT',['cho',...ECHO,'vel','vol']]]},
-'STRINGS':{skin:'str',fader:1,sub:'ストリングマシン・アンサンブル・8 音ポリ',sec:[
+'STRINGS':{skin:'str',fader:1,sec:[
  ['VOICES',[['o1lvl',"8'"],['o2lvl',"4'"],['o3lvl','BASS']]],['TONE',[['cut','BRILLIANCE'],['hpf','LOW CUT']]],
  ['ENVELOPE',[['aa','CRESCENDO'],['ar','SUSTAIN']]],['ENSEMBLE',['cho']],['VIBRATO',['lrate',['lpitch','DEPTH']]],['OUTPUT',[...ECHO,'vol']]]}
 };
 const $=q=>document.querySelector(q),el=(t,c,p)=>{const e=document.createElement(t);if(c)e.className=c;if(p)p.appendChild(e);return e};
 let PR={pr:-1,list:[]},psel=0;
+let lastState=null;
 let M,cur=-1,idx={},vals={},ctl={},touched={},pend={},base=48,lastMidi=0,panel;
 
 // 通信は 1 本の列にして順番を守る（鍵盤のオンとオフが入れ替わらないように）
@@ -163,9 +191,9 @@ function mkCtl(k,label,fader){
  return c}
 
 function build(){
- const m=M.models[cur];panel=PANELS[m.name]||{skin:'',sub:'',sec:[['ALL',M.keys]]};
+ const m=M.models[cur];panel=PANELS[m.name]||{skin:'',sec:[['ALL',M.keys]]};
  document.body.className=panel.skin;ctl={};
- $('#name b').textContent=m.name;$('#name span').textContent=panel.sub;
+ $('#name b').textContent=m.name;$('#name span').textContent=t('sub')[m.name]||'';
  const P=$('#panel');P.innerHTML='';
  for(const[t,items]of panel.sec){const s=el('div','sec',P);el('h2','',s).textContent=t;const r=el('div','row',s);
   for(const it of items){const k=Array.isArray(it)?it[0]:it;if(!(k in idx))continue;r.appendChild(mkCtl(k,Array.isArray(it)?it[1]:0,panel.fader))}}
@@ -178,16 +206,17 @@ function apply(s){
  M.keys.forEach((k,i)=>{if(sw||now-(touched[k]||0)>1200)vals[k]=s.p[i]});
  if(sw)build();
  for(const k in ctl)ctl[k](vals[k]);
- $('#st').textContent='CPU '+s.load+'% (瞬間最大 '+s.peak+'%)  発音 '+s.voices;
+ lastState=s;
+ $('#st').textContent='CPU '+s.load+'% ('+t('peak')+' '+s.peak+'%)  '+t('voices')+' '+s.voices;
  $('#led').classList.toggle('on',s.midi!=lastMidi);lastMidi=s.midi;
  if(s.pr!=PR.pr){PR.pr=s.pr;if(s.pr>=0)psel=s.pr;drawPresets()}
- $('#bdemo').classList.toggle('on',!!s.demo);$('#bdemo').textContent=s.demo?'デモ停止':'デモ';
- $('#pmsg').textContent=s.dirty?(s.pr>=0?'＊ '+(s.pr+1)+' 番から変更あり（未保存）':'＊ 未保存'):''}
+ drawDemo();
+ $('#pmsg').textContent=s.dirty?(s.pr>=0?t('dirtyFrom')(s.pr+1):t('dirty')):''}
 const getState=u=>req(u).then(r=>r.json()).then(apply).catch(()=>{});
 
 // ---- 鍵盤 ----
 const held={};  // pointerId -> 音
-function nOn(n,v){req('/api/note?n='+n+'&v='+v);$('#bdemo').classList.remove('on');$('#bdemo').textContent='デモ';const k=$('#kb [data-n="'+n+'"]');if(k)k.classList.add('on')}
+function nOn(n,v){req('/api/note?n='+n+'&v='+v);if(lastState)lastState.demo=lastState.tour=0;drawDemo();const k=$('#kb [data-n="'+n+'"]');if(k)k.classList.add('on')}
 function nOff(n){req('/api/note?n='+n+'&v=0');const k=$('#kb [data-n="'+n+'"]');if(k)k.classList.remove('on')}
 function buildKb(){
  const kb=$('#kb');kb.innerHTML='';$('#ol').textContent='C'+(base/12-1);
@@ -214,7 +243,7 @@ const two=n=>(n<10?'0':'')+n;
 function drawPresets(){
  const sel=$('#psel');sel.innerHTML='';
  for(let i=0;i<PR.list.length;i++){const e=PR.list[i],o=el('option','',sel);o.value=i;
-  o.textContent=two(i+1)+'  '+(e?(M.models[e[1]].name==e[0]?e[0]:e[0]+'  ['+M.models[e[1]].name+']'):'（空き）')+(i==PR.pr?'  ●':'')}
+  o.textContent=two(i+1)+'  '+(e?(M.models[e[1]].name==e[0]?e[0]:e[0]+'  ['+M.models[e[1]].name+']'):t('empty'))+(i==PR.pr?'  ●':'')}
  sel.value=psel;const e=PR.list[psel];$('#pname').value=e?e[0]:'';$('#pdel').disabled=!e}
 const setPresets=p=>{PR=p;if(p.pr>=0)psel=p.pr;drawPresets()};
 const getPresets=u=>req(u).then(r=>r.json()).then(setPresets).catch(()=>{});
@@ -223,15 +252,32 @@ $('#psel').onchange=e=>{psel=+e.target.value;if(PR.list[psel])loadPreset(psel);e
 function stepPreset(d){const n=PR.list.length;let i=psel;for(let k=0;k<n;k++){i=(i+d+n)%n;if(PR.list[i]){loadPreset(i);return}}}
 $('#pprev').onclick=()=>stepPreset(-1);$('#pnext').onclick=()=>stepPreset(1);
 $('#psave').onclick=()=>{const e=PR.list[psel],name=$('#pname').value.trim();
- if(e&&!confirm((psel+1)+' 番「'+e[0]+'」に上書きしますか？'))return;
+ if(e&&!confirm(t('overwrite')(psel+1,e[0])))return;
  const ks=Object.keys(pend);if(ks.length){req('/api/set?'+ks.map(k=>k+'='+(+(+pend[k]).toFixed(4))).join('&'));pend={}}
  getPresets('/api/preset/save?i='+psel+'&name='+encodeURIComponent(name)).then(()=>getState('/api/state'))};
-$('#pdel').onclick=()=>{const e=PR.list[psel];if(e&&confirm((psel+1)+' 番「'+e[0]+'」を削除しますか？'))getPresets('/api/preset/delete?i='+psel)};
+$('#pdel').onclick=()=>{const e=PR.list[psel];if(e&&confirm(t('remove')(psel+1,e[0])))getPresets('/api/preset/delete?i='+psel)};
+
+// ---- 言語の切り替え ----
+function applyLang(){
+ document.documentElement.lang=lang;
+ document.querySelectorAll('[data-t]').forEach(e=>e.textContent=t(e.dataset.t));
+ document.querySelectorAll('[data-tp]').forEach(e=>e.placeholder=t(e.dataset.tp));
+ $('#blang').textContent=t('lang');
+ drawDemo();
+ if(M){if(cur>=0)$('#name span').textContent=t('sub')[M.models[cur].name]||'';drawPresets()}
+ if(lastState)apply(lastState)}
+$('#blang').onclick=()=>{lang=lang=='ja'?'en':'ja';try{localStorage.setItem('lang',lang)}catch(e){}applyLang()};
+applyLang();
 
 // ---- 起動 ----
 $('#binit').onclick=()=>{touched={};pend={};getState('/api/init')};
 $('#bpanic').onclick=()=>req('/api/panic').then(()=>getState('/api/state'));
-$('#bdemo').onclick=()=>getState('/api/demo?on='+($('#bdemo').classList.contains('on')?0:1));
+// デモ: 「デモ」は今の機種を繰り返す。「全機種デモ」は 1 フレーズごとに次の機種へ移る
+function drawDemo(){const s=lastState||{},d=!!s.demo,tr=d&&!!s.tour;
+ $('#bdemo').classList.toggle('on',d&&!tr);$('#bdemo').textContent=d&&!tr?t('demoStop'):t('demo');
+ $('#btour').classList.toggle('on',tr);$('#btour').textContent=tr?t('demoStop'):t('tour')}
+$('#bdemo').onclick=()=>{const s=lastState||{};getState('/api/demo?on='+(s.demo&&!s.tour?0:1)+'&tour=0')};
+$('#btour').onclick=()=>{const s=lastState||{};getState('/api/demo?on='+(s.demo&&s.tour?0:1)+'&tour=1')};
 req('/api/meta').then(r=>r.json()).then(m=>{
  M=m;m.keys.forEach((k,i)=>idx[k]=i);document.title=m.ssid;
  m.models.forEach((x,i)=>{const b=el('button','',$('#tabs'));b.textContent=x.name;b.onclick=()=>{touched={};pend={};getState('/api/model?m='+i)}});
@@ -240,7 +286,9 @@ req('/api/meta').then(r=>r.json()).then(m=>{
  setInterval(()=>{const ks=Object.keys(pend);if(!ks.length||qlen>1)return;
   const u='/api/set?'+ks.map(k=>k+'='+(+(+pend[k]).toFixed(4))).join('&');pend={};req(u)},40);
  // MIDI の CC やプログラムチェンジで変わったぶんを画面に反映する
- setInterval(()=>{if(qlen==0)getState('/api/state')},1500)});
+ let lastPoll=0;
+ setInterval(()=>{const now=Date.now(),iv=lastState&&lastState.demo?300:1500;
+  if(qlen==0&&now-lastPoll>=iv){lastPoll=now;getState('/api/state')}},100)});
 </script>
 </body>
 </html>

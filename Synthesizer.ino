@@ -267,6 +267,8 @@ String stateJson() {
   s += curPreset;
   s += ",\"demo\":";
   s += demo.on ? 1 : 0;
+  s += ",\"tour\":";
+  s += demo.on && demo.tour ? 1 : 0;
   s += ",\"dirty\":";
   s += dirty ? 1 : 0;
   s += "}";
@@ -364,6 +366,7 @@ void webInit() {
   });
   // 自動デモ。on=1 で開始、on=0 で停止
   server.on("/api/demo", []() {
+    demo.tour = server.arg("tour").toInt() != 0;  // 1 = 全機種を順に回る
     demo.on = server.arg("on").toInt() != 0;
     sendState();
   });
@@ -447,8 +450,29 @@ void setup() {
   pinMode(PIN_BTN_PREV, INPUT_PULLUP);
 }
 
+// 全機種デモ: Core1 が 1 フレーズ弾き終えたら、余韻を待ってから次の機種へ
+void tourPoll() {
+  static uint32_t seen = 0, doneAt = 0;
+  static bool waiting = false;
+  if (!demo.on || !demo.tour) {
+    waiting = false;
+    seen = demo.phrasesDone;
+    return;
+  }
+  if (demo.phrasesDone != seen) {
+    seen = demo.phrasesDone;
+    waiting = true;
+    doneAt = millis();
+  }
+  if (waiting && millis() - doneAt >= 600) {
+    waiting = false;
+    setModel((curModel + 1) % N_MODELS);
+  }
+}
+
 void loop() {
   midiPoll();
+  tourPoll();
   dns.processNextRequest();
   server.handleClient();
   midiPoll();
