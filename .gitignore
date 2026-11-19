@@ -6,3 +6,4 @@
 # 動画の書き出し（大きいのでリポジトリに入れない）
 /video/*.mp4
 /video/work/
+/video/thumbnail.png
