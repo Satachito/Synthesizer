@@ -257,6 +257,10 @@ DIN の MIDI IN は機器名がなく、つないだ鍵盤やシーケンサー�
 | `demo.h` | 自動デモのフレーズと再生（Core1） |
 | `web_ui.h` | 操作画面（HTML / JS）。機種ごとのつまみの並びはここの `PANELS` |
 | `test/host_test.cpp` | エンジンを PC で鳴らして `test/out/*.wav` に書き出す（デモは `test/out/demo_*.wav`） |
+| `video/build.sh` | YouTube 用の紹介動画を組み立てる（`video/build.sh <画面録画> <写真>`。macOS と ffmpeg が必要） |
+| `video/cards.swift` | 動画の字幕とカード（日本語と英語の併記）を描く |
+| `video/find_switches.py` | 画面録画のどこで機種が切り替わったかを調べる（`build.sh` の字幕の時刻を決めるため） |
+| `video/youtube.txt` | YouTube に載せるときのタイトル・説明文・チャプター・タグの案 |
 
 PC でのテスト:
 
