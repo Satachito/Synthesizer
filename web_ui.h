@@ -21,6 +21,7 @@ header{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 12px;b
 header h1{margin:0;font-size:15px;letter-spacing:.25em;font-weight:700}
 #tabs{display:flex;flex-wrap:wrap;gap:4px;flex:1}
 button{font:inherit;color:inherit;background:#222;border:1px solid #555;border-radius:3px;padding:6px 10px;cursor:pointer;letter-spacing:.08em}
+#bdemo.on{background:#c33;border-color:#c33;color:#fff;font-weight:700}
 #tabs button.on{background:#e8e0c8;color:#000;border-color:#e8e0c8;font-weight:700}
 #stat{font-size:11px;color:#999;white-space:nowrap;font-variant-numeric:tabular-nums}
 #led{display:inline-block;width:8px;height:8px;border-radius:50%;background:#333;margin-right:4px;vertical-align:middle}
@@ -68,7 +69,7 @@ footer{padding:8px 14px;color:#777;font-size:11px}
   <h1>PICO SYNTH</h1>
   <div id="tabs"></div>
   <span id="stat"><span id="led"></span><span id="st"></span></span>
-  <button id="binit">初期化</button><button id="bpanic">音を止める</button>
+  <button id="bdemo">デモ</button><button id="binit">初期化</button><button id="bpanic">音を止める</button>
 </header>
 <div id="pbar">
   <span>プリセット</span><button id="pprev">◀</button><select id="psel"></select><button id="pnext">▶</button>
@@ -85,7 +86,7 @@ footer{padding:8px 14px;color:#777;font-size:11px}
     <span>鍵盤は下のほうを押すほど強く鳴る。PC のキーボードは A S D F … の段</span></div>
   <div id="kb"></div>
 </div>
-<footer>つまみは上下にドラッグ。作った音はプリセットの番号を選んで「この番号に保存」。保存しないと電源を切ったときに消える。ライブでは MIDI のプログラムチェンジ（0〜31 = プリセット 1〜32）か本体のボタンで呼び出す。電源を入れるといちばん小さい番号で始まる。</footer>
+<footer>「デモ」を押すと、今の機種に合ったフレーズを今の音色で繰り返す（鍵盤を弾くと止まる）。つまみは上下にドラッグ。作った音はプリセットの番号を選んで「この番号に保存」。保存しないと電源を切ったときに消える。ライブでは MIDI のプログラムチェンジ（0〜31 = プリセット 1〜32）か本体のボタンで呼び出す。電源を入れるといちばん小さい番号で始まる。</footer>
 <script>
 const LBL={o1wave:'WAVE',o1oct:'OCTAVE',o1lvl:'LEVEL',o2wave:'WAVE',o2oct:'OCTAVE',o2semi:'SEMI',o2det:'DETUNE',o2lvl:'LEVEL',
 o3wave:'WAVE',o3oct:'OCTAVE',o3det:'DETUNE',o3lvl:'LEVEL',pw:'PW',pwm:'PWM',noise:'NOISE',ring:'RING',pmenv:'FILT ENV',pmosc:'OSC B',
@@ -180,12 +181,13 @@ function apply(s){
  $('#st').textContent='CPU '+s.load+'% (瞬間最大 '+s.peak+'%)  発音 '+s.voices;
  $('#led').classList.toggle('on',s.midi!=lastMidi);lastMidi=s.midi;
  if(s.pr!=PR.pr){PR.pr=s.pr;if(s.pr>=0)psel=s.pr;drawPresets()}
+ $('#bdemo').classList.toggle('on',!!s.demo);$('#bdemo').textContent=s.demo?'デモ停止':'デモ';
  $('#pmsg').textContent=s.dirty?(s.pr>=0?'＊ '+(s.pr+1)+' 番から変更あり（未保存）':'＊ 未保存'):''}
 const getState=u=>req(u).then(r=>r.json()).then(apply).catch(()=>{});
 
 // ---- 鍵盤 ----
 const held={};  // pointerId -> 音
-function nOn(n,v){req('/api/note?n='+n+'&v='+v);const k=$('#kb [data-n="'+n+'"]');if(k)k.classList.add('on')}
+function nOn(n,v){req('/api/note?n='+n+'&v='+v);$('#bdemo').classList.remove('on');$('#bdemo').textContent='デモ';const k=$('#kb [data-n="'+n+'"]');if(k)k.classList.add('on')}
 function nOff(n){req('/api/note?n='+n+'&v=0');const k=$('#kb [data-n="'+n+'"]');if(k)k.classList.remove('on')}
 function buildKb(){
  const kb=$('#kb');kb.innerHTML='';$('#ol').textContent='C'+(base/12-1);
@@ -228,7 +230,8 @@ $('#pdel').onclick=()=>{const e=PR.list[psel];if(e&&confirm((psel+1)+' 番「'+e
 
 // ---- 起動 ----
 $('#binit').onclick=()=>{touched={};pend={};getState('/api/init')};
-$('#bpanic').onclick=()=>req('/api/panic');
+$('#bpanic').onclick=()=>req('/api/panic').then(()=>getState('/api/state'));
+$('#bdemo').onclick=()=>getState('/api/demo?on='+($('#bdemo').classList.contains('on')?0:1));
 req('/api/meta').then(r=>r.json()).then(m=>{
  M=m;m.keys.forEach((k,i)=>idx[k]=i);document.title=m.ssid;
  m.models.forEach((x,i)=>{const b=el('button','',$('#tabs'));b.textContent=x.name;b.onclick=()=>{touched={};pend={};getState('/api/model?m='+i)}});

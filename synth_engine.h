@@ -16,18 +16,39 @@
 #endif
 #define SYNTH_INL inline __attribute__((always_inline))
 
+// 音の側で使うメモリの消去と複写。ライブラリの memset / memcpy はフラッシュ上にあるので使わない
+// （ループが memset の呼び出しに置き換えられないように、その最適化だけ切る）
+#ifdef ARDUINO
+#define SYNTH_NODIST __attribute__((optimize("no-tree-loop-distribute-patterns")))
+#else
+#define SYNTH_NODIST
+#endif
 class Synth {
 public:
   static constexpr float SR = 48000.0f;
   static constexpr int BLOCK = 16;  // この単位で EG・LFO・音程を更新する（3kHz）
   static constexpr int MAXV = 8;
 
-  float P[NP];                 // 今の音色。Core0 が書き、書いたら gen を増やす
-  volatile uint32_t gen = 1;
-  volatile int model = 0;      // Core0 が書く。render() が次のブロックで切り替える
+  float P[NP];                 // 今の音色。Core0 が書き、書いたら update() を呼ぶ
+  volatile int model = 0;      // Core0 が書く（そのあと update()）。render() が音を絞ってから切り替える
   volatile int activeVoices = 0;
 
+  // Core0 から呼ぶ。P[] と model から係数を計算して音の側に渡す。
+  // powf / expf を何十回も使うので、音の側のコアではやらない（やると 1 ブロックの時間を超えて音が途切れる）
+  void update() {
+    Derived t;
+    derive(model, t);
+    __atomic_fetch_add(&dSeq, 1, __ATOMIC_SEQ_CST);  // 奇数 = 書き込み中
+    memcpy((void *)&dShared, &t, sizeof(t));
+    __atomic_fetch_add(&dSeq, 1, __ATOMIC_SEQ_CST);
+  }
+
   enum EvType : uint8_t { EV_ON, EV_OFF, EV_BEND, EV_MODW, EV_SUS, EV_ALLOFF };
+
+  // Core1（render() と同じコア）からだけ呼ぶ。キューを通さずにすぐ処理する（demo.h が使う）
+  SYNTH_INL void eventNow(uint8_t type, uint8_t a = 0, uint8_t b = 0) { handle(type, a, b); }
+  int currentModel() const { return cur; }
+  bool switching() const { return model != cur; }
 
   // Core0 から呼ぶ。EV_BEND は a = 下位 7bit, b = 上位 7bit
   bool post(uint8_t type, uint8_t a = 0, uint8_t b = 0) {
@@ -42,21 +63,29 @@ public:
     for (int i = 0; i <= 256; i++) pow2tab[i] = powf(2.0f, i / 256.0f);
     modelDefaults(0, P);
     cur = -1;
+    fade = 0.0f;
     cutS = P[P_CUT];
+    update();
   }
 
   // out: ステレオ 16bit、BLOCK フレーム（L, R, L, R, ...）
-  SYNTH_RAM void render(int16_t *out) {
-    if (model != cur) switchModel(model);
-    if (gen != lastGen) {
-      lastGen = gen;
-      derive();
+  SYNTH_RAM SYNTH_NODIST void render(int16_t *out) {
+    // 機種の切り替え: 鳴っている音をいきなり止めるとプツッと鳴るので、FADE_BLOCKS で絞りきってから切り替える
+    bool switching = model != cur;
+    if (switching && fade <= 0.0f) {
+      switchModel(model);
+      switching = false;
     }
-    while (qTail != qHead) {
-      uint32_t e = q[qTail];
-      qTail = (qTail + 1) & (QN - 1);
-      handle(e & 0xff, (e >> 8) & 0xff, (e >> 16) & 0xff);
+    if (!switching) {  // 絞っている間は古い機種のまま。鍵盤の受け付けも切り替えのあとまで待たせる
+      pull();
+      while (qTail != qHead) {
+        uint32_t e = q[qTail];
+        qTail = (qTail + 1) & (QN - 1);
+        handle(e & 0xff, (e >> 8) & 0xff, (e >> 16) & 0xff);
+      }
     }
+    const float fStep = 1.0f / (float)(FADE_BLOCKS * BLOCK);
+    float fadeStep = switching ? -fStep : (fade < 1.0f ? fStep : 0.0f);
 
     // ブロックごとの共通の値
     cutS += (P[P_CUT] - cutS) * 0.08f;
@@ -86,11 +115,11 @@ public:
     activeVoices = n;
 
     // ディレイ（モノ）
-    if (d.dmix > 0.001f) {
-      if (!delayOn) {
-        memset(dbuf, 0, sizeof(dbuf));
-        delayOn = true;
-      }
+    if (d.dmix > 0.001f && dClr < DN) {
+      // 使い始め: 古い音が残っているので消す。64KB を一度に消すと 1 ブロックに収まらないので 16 回に分ける
+      ramZero(dbuf + dClr, DCLR_STEP * sizeof(dbuf[0]));
+      dClr += DCLR_STEP;
+    } else if (d.dmix > 0.001f) {
       for (int i = 0; i < BLOCK; i++) {
         dlenS += (d.dlen - dlenS) * 0.0004f;
         float rp = (float)dw - dlenS;
@@ -108,7 +137,7 @@ public:
         mix[i] += y * d.dmix;
       }
     } else {
-      delayOn = false;
+      dClr = 0;  // 次に使うときに消し直す
     }
 
     // コーラス（ここでステレオになる）と出力
@@ -138,12 +167,26 @@ public:
         }
         cw = (cw + 1) & (CN - 1);
       }
-      out[i * 2] = (int16_t)(softclip(l * volS) * 32000.0f);
-      out[i * 2 + 1] = (int16_t)(softclip(r * volS) * 32000.0f);
+      fade += fadeStep;
+      if (fade > 1.0f) fade = 1.0f;
+      else if (fade < 0.0f) fade = 0.0f;
+      float g = volS * fade;
+      out[i * 2] = (int16_t)(softclip(l * g) * 32000.0f);
+      out[i * 2 + 1] = (int16_t)(softclip(r * g) * 32000.0f);
     }
   }
 
 private:
+  SYNTH_RAM SYNTH_NODIST static void ramZero(void *p, size_t n) {
+    uint32_t *w = (uint32_t *)p;
+    for (size_t i = 0; i < n / 4; i++) w[i] = 0;
+  }
+  SYNTH_RAM SYNTH_NODIST static void ramCopy(void *dst, const void *src, size_t n) {
+    uint32_t *d = (uint32_t *)dst;
+    const uint32_t *s = (const uint32_t *)src;
+    for (size_t i = 0; i < n / 4; i++) d[i] = s[i];
+  }
+
   // ---- 小物 ----
   float pow2tab[257];
   SYNTH_INL float fpow2(float x) const {  // 2^x。表引き + 直線補間
@@ -288,59 +331,69 @@ private:
     return c;
   }
 
-  void derive() {
-    const ModelDef &md = MODELS[cur];
-    d.filt = md.filt;
-    d.comp = md.comp;
+  void derive(int m, Derived &o) const {
+    if (m < 0 || m >= N_MODELS) m = 0;
+    const ModelDef &md = MODELS[m];
+    o.filt = md.filt;
+    o.comp = md.comp;
     float dr = P[P_DRIVE];
     float pre = 0.25f + 1.75f * dr * dr;
-    d.w1 = (int)P[P_O1WAVE];
-    d.w2 = (int)P[P_O2WAVE];
-    d.w3 = (int)P[P_O3WAVE];
-    d.l1 = P[P_O1LVL] * pre;
-    d.l2 = P[P_O2LVL] * pre;
-    d.l3 = P[P_O3LVL] * pre;
-    d.noise = P[P_NOISE] * pre;
-    d.ring = P[P_RING] * pre;
-    d.fm = P[P_PMOSC] * P[P_PMOSC] * 4.0f;
-    d.pmenv = P[P_PMENV] * P[P_PMENV] * 2.0f;
-    d.oct1 = (float)((int)P[P_O1OCT] - 2);
-    d.oct2 = (float)((int)P[P_O2OCT] - 2) + ((float)((int)P[P_O2SEMI] - 12) + (P[P_O2DET] - 0.5f)) * (1.0f / 12.0f);
-    d.oct3 = (float)((int)P[P_O3OCT] - 2) + (P[P_O3DET] - 0.5f) * (1.0f / 12.0f);
-    d.pw = 0.5f + 0.45f * P[P_PW];
-    d.pwm = 0.4f * P[P_PWM];
-    if (md.filt == FILT_LADDER) d.k = P[P_RES] * md.resMax;
-    else if (md.filt == FILT_MS) d.k = 2.0f - 2.12f * P[P_RES];  // 少しマイナスまで行って発振する
-    else d.k = 2.0f - 1.95f * P[P_RES];
-    d.kh = 2.0f - 2.1f * P[P_HPRES];
-    d.fenv = P[P_FENV] * 10.0f;
-    d.fkbd = P[P_FKBD];
-    d.flfo = P[P_FLFO] * 4.0f;
-    d.fmode = P[P_FMODE];
-    d.gh = tang(20.0f * powf(2.0f, P[P_HPF] * 8.0f));
-    d.hpC = P[P_HPF] < 0.01f ? 0.0f : 1.0f - expf(-6.2832f * 10.0f * powf(2.0f, P[P_HPF] * 8.0f) / SR);
-    d.faC = envCoef(P[P_FA], 1.5f);
-    d.fdC = envCoef(P[P_FD], 3.0f);
-    d.fs = P[P_FS];
-    d.frC = envCoef(P[P_FR], 3.0f);
-    d.aaC = envCoef(P[P_AA], 1.5f);
-    d.adC = envCoef(P[P_AD], 3.0f);
-    d.as = P[P_AS];
-    d.arC = envCoef(P[P_AR], 3.0f);
-    d.vels = P[P_VELS];
-    d.acc = P[P_ACC];
-    d.lwave = (int)P[P_LWAVE];
-    d.lfoInc = 0.05f * powf(2.0f, P[P_LRATE] * 9.2f) * (float)BLOCK / SR;  // 0.05 .. 30Hz
-    d.vib = P[P_LPITCH] * P[P_LPITCH] * 7.0f;
-    d.glideC = P[P_GLIDE] < 0.01f ? 1.0f : 1.0f - expf(-(float)BLOCK * 3.0f / (SR * 0.005f * powf(400.0f, P[P_GLIDE])));
-    d.legato = P[P_LEGATO] >= 0.5f;
-    d.post = (md.voices == 1 ? 0.8f : 0.42f) / sqrtf(pre);
-    d.vol = P[P_VOL] * P[P_VOL] * 1.4f;
-    d.cho = (int)P[P_CHO];
-    d.choInc = (d.cho == 2 ? 0.83f : 0.5f) / SR;
-    d.dlen = (0.03f + 0.62f * P[P_DTIME]) * SR;
-    d.dfb = P[P_DFB] * 0.9f;
-    d.dmix = P[P_DMIX];
+    o.w1 = (int)P[P_O1WAVE];
+    o.w2 = (int)P[P_O2WAVE];
+    o.w3 = (int)P[P_O3WAVE];
+    o.l1 = P[P_O1LVL] * pre;
+    o.l2 = P[P_O2LVL] * pre;
+    o.l3 = P[P_O3LVL] * pre;
+    o.noise = P[P_NOISE] * pre;
+    o.ring = P[P_RING] * pre;
+    o.fm = P[P_PMOSC] * P[P_PMOSC] * 4.0f;
+    o.pmenv = P[P_PMENV] * P[P_PMENV] * 2.0f;
+    o.oct1 = (float)((int)P[P_O1OCT] - 2);
+    o.oct2 = (float)((int)P[P_O2OCT] - 2) + ((float)((int)P[P_O2SEMI] - 12) + (P[P_O2DET] - 0.5f)) * (1.0f / 12.0f);
+    o.oct3 = (float)((int)P[P_O3OCT] - 2) + (P[P_O3DET] - 0.5f) * (1.0f / 12.0f);
+    o.pw = 0.5f + 0.45f * P[P_PW];
+    o.pwm = 0.4f * P[P_PWM];
+    if (md.filt == FILT_LADDER) o.k = P[P_RES] * md.resMax;
+    else if (md.filt == FILT_MS) o.k = 2.0f - 2.12f * P[P_RES];  // 少しマイナスまで行って発振する
+    else o.k = 2.0f - 1.95f * P[P_RES];
+    o.kh = 2.0f - 2.1f * P[P_HPRES];
+    o.fenv = P[P_FENV] * 10.0f;
+    o.fkbd = P[P_FKBD];
+    o.flfo = P[P_FLFO] * 4.0f;
+    o.fmode = P[P_FMODE];
+    o.gh = tang(20.0f * powf(2.0f, P[P_HPF] * 8.0f));
+    o.hpC = P[P_HPF] < 0.01f ? 0.0f : 1.0f - expf(-6.2832f * 10.0f * powf(2.0f, P[P_HPF] * 8.0f) / SR);
+    o.faC = envCoef(P[P_FA], 1.5f);
+    o.fdC = envCoef(P[P_FD], 3.0f);
+    o.fs = P[P_FS];
+    o.frC = envCoef(P[P_FR], 3.0f);
+    o.aaC = envCoef(P[P_AA], 1.5f);
+    o.adC = envCoef(P[P_AD], 3.0f);
+    o.as = P[P_AS];
+    o.arC = envCoef(P[P_AR], 3.0f);
+    o.vels = P[P_VELS];
+    o.acc = P[P_ACC];
+    o.lwave = (int)P[P_LWAVE];
+    o.lfoInc = 0.05f * powf(2.0f, P[P_LRATE] * 9.2f) * (float)BLOCK / SR;  // 0.05 .. 30Hz
+    o.vib = P[P_LPITCH] * P[P_LPITCH] * 7.0f;
+    o.glideC = P[P_GLIDE] < 0.01f ? 1.0f : 1.0f - expf(-(float)BLOCK * 3.0f / (SR * 0.005f * powf(400.0f, P[P_GLIDE])));
+    o.legato = P[P_LEGATO] >= 0.5f;
+    o.post = (md.voices == 1 ? 0.8f : 0.42f) / sqrtf(pre);
+    o.vol = P[P_VOL] * P[P_VOL] * 1.4f;
+    o.cho = (int)P[P_CHO];
+    o.choInc = (o.cho == 2 ? 0.83f : 0.5f) / SR;
+    o.dlen = (0.03f + 0.62f * P[P_DTIME]) * SR;
+    o.dfb = P[P_DFB] * 0.9f;
+    o.dmix = P[P_DMIX];
+  }
+
+  // Core1: Core0 が update() で書いた係数を受け取る。書き込み中だったら次のブロックでやり直す
+  SYNTH_INL void pull() {
+    uint32_t s1 = __atomic_load_n(&dSeq, __ATOMIC_SEQ_CST);
+    if (s1 == dSeen || (s1 & 1)) return;
+    ramCopy(&d, (const void *)&dShared, sizeof(d));
+    if (__atomic_load_n(&dSeq, __ATOMIC_SEQ_CST) != s1) return;
+    dSeen = s1;
   }
 
   // ---- 1 音ぶん ----
@@ -467,7 +520,7 @@ private:
   }
 
   // ---- 鍵盤 ----
-  void startVoice(Voice &v, int note, float vel, bool glideFromPrev) {
+  SYNTH_RAM void startVoice(Voice &v, int note, float vel, bool glideFromPrev) {
     const ModelDef &md = MODELS[cur];
     if (!v.active) {
       v.fe.v = v.ae.v = 0.0f;
@@ -487,13 +540,13 @@ private:
     v.active = true;
     v.age = ++clock;
   }
-  static void release(Voice &v) {
+  SYNTH_RAM static void release(Voice &v) {
     v.gate = false;
     v.held = false;
     if (v.fe.st) v.fe.st = 4;
     if (v.ae.st) v.ae.st = 4;
   }
-  void stackRemove(int note) {
+  SYNTH_RAM SYNTH_NODIST void stackRemove(int note) {
     for (int i = 0; i < nStack; i++)
       if (stack[i] == note) {
         for (int j = i; j < nStack - 1; j++) stack[j] = stack[j + 1];
@@ -502,7 +555,7 @@ private:
       }
   }
 
-  void noteOn(int note, float vel) {
+  SYNTH_RAM void noteOn(int note, float vel) {
     if (nv == 1) {  // モノ: 後から押した鍵が優先
       Voice &v = V[0];
       bool overlap = v.active && v.gate && nStack > 0;
@@ -535,7 +588,7 @@ private:
     startVoice(V[vi], note, vel, false);
   }
 
-  void noteOff(int note) {
+  SYNTH_RAM void noteOff(int note) {
     if (nv == 1) {
       Voice &v = V[0];
       stackRemove(note);
@@ -554,7 +607,7 @@ private:
       }
   }
 
-  void handle(uint8_t type, uint8_t a, uint8_t b) {
+  SYNTH_RAM void handle(uint8_t type, uint8_t a, uint8_t b) {
     switch (type) {
       case EV_ON:
         if (b) noteOn(a, (float)b * (1.0f / 127.0f));
@@ -577,11 +630,18 @@ private:
     }
   }
 
-  void switchModel(int m) {
+  SYNTH_RAM void switchModel(int m) {
     if (m < 0 || m >= N_MODELS) m = 0;
     cur = m;
     nv = MODELS[m].voices;
-    for (int i = 0; i < MAXV; i++) V[i] = Voice();
+    for (int i = 0; i < MAXV; i++) {  // V[i] = Voice() と同じ（構造体の代入は memcpy になるので使わない）
+      Voice &v = V[i];
+      ramZero(&v, sizeof(v));
+      v.note = 60;
+      v.vel = 1.0f;
+      v.pitch = v.target = 60.0f;
+      v.gPrev = v.ghPrev = -1.0f;
+    }
     for (int i = 0; i < MAXV; i++) {  // VCO は位相をばらしておく
       V[i].ph1 = 0.5f + 0.5f * rnd();
       V[i].ph2 = 0.5f + 0.5f * rnd();
@@ -591,10 +651,11 @@ private:
     sustain = false;
     everPlayed = false;
     bend = 0.0f;
-    memset(cbuf, 0, sizeof(cbuf));
-    delayOn = false;
+    ramZero(cbuf, sizeof(cbuf));
+    dClr = 0;
     dlp = 0.0f;
-    lastGen = 0;  // derive() をやり直す
+    dSeen = 0;  // 新しい機種の係数を取り直す
+    pull();
     cutS = P[P_CUT];
   }
 
@@ -607,15 +668,23 @@ private:
   }
 
   static constexpr int QN = 64, CN = 1024, DN = 32768;
+  static_assert(sizeof(Derived) % 4 == 0, "ramCopy は 4 バイト単位");
+  static_assert(sizeof(Voice) % 4 == 0, "ramZero は 4 バイト単位");
+  static constexpr int FADE_BLOCKS = 4;    // 切り替えのときに絞る長さ（4 ブロック = 約 1.3ms）
+  static constexpr int DCLR_STEP = DN / 16;
+  Derived dShared;                          // Core0 が書く
+  uint32_t dSeq = 0, dSeen = 0;             // dSeq: 奇数 = 書き込み中
+  float fade = 0.0f;
+  int dClr = 0;                             // ディレイのバッファをここまで消した
   volatile uint32_t q[QN];
   volatile uint32_t qHead = 0, qTail = 0;
 
   Voice V[MAXV];
   int cur = -1, nv = 1;
-  uint32_t lastGen = 0, clock = 0;
+  uint32_t clock = 0;
   uint8_t stack[16];
   int nStack = 0;
-  bool sustain = false, everPlayed = false, delayOn = false;
+  bool sustain = false, everPlayed = false;
   float bend = 0, bendS = 0, modw = 0, pitchMod = 0;
   float cutS = 0.5f, volS = 0;
   float lfoPh = 0, lfoVal = 0, lfoSH = 0;

@@ -33,6 +33,7 @@
 #include "pico/unique_id.h"
 #include "synth_engine.h"
 #include "web_ui.h"
+#include "demo.h"
 
 const uint8_t PIN_I2S_LCK = 0;  // LCK, BCK の順に隣り合わせ
 const uint8_t PIN_I2S_DIN = 2;
@@ -46,6 +47,7 @@ const char *WIFI_SSID_BASE = "Synth";
 const char *WIFI_PASS = "";  // 8 文字以上を入れるとパスワード付きになる。空ならパスワードなし
 
 Synth synth;
+DemoPlayer demo;
 I2S i2s(OUTPUT);
 WebServer server(80);
 DNSServer dns;
@@ -66,7 +68,7 @@ void setParam(int id, float v) {
   if (steps) v = constrain((int)(v + 0.5f), 0, steps - 1);
   else v = constrain(v, 0.0f, 1.0f);
   synth.P[id] = v;
-  synth.gen = synth.gen + 1;
+  synth.update();
   dirty = true;
 }
 
@@ -76,7 +78,7 @@ void setModel(int m) {
   curModel = m;
   memcpy(synth.P, patches[m], sizeof(synth.P));
   synth.model = m;
-  synth.gen = synth.gen + 1;
+  synth.update();
   dirty = true;
 }
 
@@ -118,7 +120,7 @@ bool presetLoad(int i) {
   presetUnpack(presets[i], patches[curModel]);
   memcpy(synth.P, patches[curModel], sizeof(synth.P));
   synth.model = curModel;
-  synth.gen = synth.gen + 1;
+  synth.update();
   curPreset = i;
   dirty = false;
   return true;
@@ -177,7 +179,7 @@ void storeLoad() {
   for (int i = 0; i < N_PRESETS; i++) presets[i].name[sizeof(presets[i].name) - 1] = 0;
   memcpy(synth.P, patches[0], sizeof(synth.P));
   synth.model = curModel = 0;
-  synth.gen = synth.gen + 1;
+  synth.update();
   for (int i = 0; i < N_PRESETS; i++)
     if (presetLoad(i)) break;
 }
@@ -187,7 +189,10 @@ void storeLoad() {
 void midiMessage(uint8_t status, uint8_t d1, uint8_t d2) {
   midiCount++;
   switch (status & 0xf0) {
-    case 0x90: synth.post(Synth::EV_ON, d1, d2); break;
+    case 0x90:
+      if (d2) demo.on = false;  // 弾き始めたらデモは止める
+      synth.post(Synth::EV_ON, d1, d2);
+      break;
     case 0x80: synth.post(Synth::EV_OFF, d1); break;
     case 0xe0: synth.post(Synth::EV_BEND, d1, d2); break;
     case 0xc0: presetLoad(d1); break;  // プログラムチェンジ 0〜31 = プリセット 1〜32。空きの番号は無視
@@ -260,6 +265,8 @@ String stateJson() {
   s += midiCount;
   s += ",\"pr\":";
   s += curPreset;
+  s += ",\"demo\":";
+  s += demo.on ? 1 : 0;
   s += ",\"dirty\":";
   s += dirty ? 1 : 0;
   s += "}";
@@ -351,10 +358,17 @@ void webInit() {
   // 画面の鍵盤。v = 0 で離す
   server.on("/api/note", []() {
     int n = server.arg("n").toInt(), v = server.arg("v").toInt();
+    if (v > 0) demo.on = false;  // 画面の鍵盤を弾いてもデモは止める
     if (n >= 0 && n < 128) synth.post(v > 0 ? Synth::EV_ON : Synth::EV_OFF, n, constrain(v, 0, 127));
     server.send(200, "text/plain", "ok");
   });
+  // 自動デモ。on=1 で開始、on=0 で停止
+  server.on("/api/demo", []() {
+    demo.on = server.arg("on").toInt() != 0;
+    sendState();
+  });
   server.on("/api/panic", []() {
+    demo.on = false;
     synth.post(Synth::EV_ALLOFF);
     server.send(200, "text/plain", "ok");
   });
@@ -386,7 +400,7 @@ void webInit() {
   // 今の機種を工場出荷時の音色に戻す（プリセットは書き換えない）
   server.on("/api/init", []() {
     modelDefaults(curModel, synth.P);
-    synth.gen = synth.gen + 1;
+    synth.update();
     dirty = true;
     sendState();
   });
@@ -486,12 +500,13 @@ void loop1() {
   const uint32_t blockUs = (uint32_t)(Synth::BLOCK * 1000000.0f / Synth::SR);
 
   uint32_t t0 = micros();
+  demo.tick(synth);  // 計測に含める（デモの分も負荷として出す）
   synth.render(buf);
   uint32_t dt = micros() - t0;
   sumUs += dt;
   if (dt > peakUs) peakUs = dt;
   if (++blocks >= 1500) {  // 0.5 秒ごとに負荷を出す。平均が 100% に近づくと音が途切れる
-    // 最大はつまみを動かした瞬間（derive() の再計算）に 100% を超えるが、送信バッファが 5ms あるので途切れない
+    // 最大が 100% を超えても、1 ブロックだけなら送信バッファ（約 5ms）で吸収できるので途切れない
     loadPct = sumUs * 100 / (blocks * blockUs);
     loadPeakPct = peakUs * 100 / blockUs;
     sumUs = peakUs = blocks = 0;

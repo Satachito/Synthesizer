@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include "synth_engine.h"
+#include "demo.h"
 
 static Synth synth;
 
@@ -49,7 +50,7 @@ int main(int argc, char **argv) {
     modelDefaults(5, synth.P);
     synth.P[P_O1WAVE] = 3; synth.P[P_O2LVL] = 0; synth.P[P_CUT] = 1; synth.P[P_FENV] = 0; synth.P[P_AS] = 1;
     synth.model = 5;
-    synth.gen = synth.gen + 1;
+    synth.update();
     std::vector<int16_t> out;
     Stat st;
     synth.post(Synth::EV_ON, 69, 100);
@@ -64,7 +65,7 @@ int main(int argc, char **argv) {
   for (int m = 0; m < N_MODELS; m++) {
     modelDefaults(m, synth.P);
     synth.model = m;
-    synth.gen = synth.gen + 1;
+    synth.update();
     std::vector<int16_t> out;
     Stat st;
     bool mono = MODELS[m].voices == 1;
@@ -101,7 +102,7 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 60; i++) {
       synth.P[P_CUT] = (i % 20) / 19.0f;
       synth.P[P_HPF] = 1.0f - (i % 20) / 19.0f;
-      synth.gen = synth.gen + 1;
+      synth.update();
       run(out, 0.05f, st2);
     }
     synth.post(Synth::EV_ALLOFF);
@@ -111,6 +112,39 @@ int main(int argc, char **argv) {
     bool bad = st.peak < 2000 || st.clip > st.n / 50;
     printf("%-8s peak %5d  rms %5.0f  clipped %5.2f%%  | extreme: peak %5d | host %.1fx realtime %s\n", MODELS[m].name, st.peak, rms,
            100.0 * st.clip / st.n, st2.peak, audio / total, bad ? "  <-- CHECK" : "");
+    if (bad) fail = 1;
+  }
+  // 自動デモ: 機種ごとに 8 秒鳴らして out/demo_<機種>.wav に書く
+  static DemoPlayer demo;
+  for (int m = 0; m < N_MODELS; m++) {
+    modelDefaults(m, synth.P);
+    synth.model = m;
+    synth.update();
+    demo.on = true;
+    std::vector<int16_t> out;
+    Stat st;
+    int blocks = (int)(8.0f * Synth::SR / Synth::BLOCK);
+    int16_t buf[Synth::BLOCK * 2];
+    int maxVoices = 0;
+    for (int b = 0; b < blocks; b++) {
+      demo.tick(synth);
+      synth.render(buf);
+      if (!synth.switching() && synth.activeVoices > maxVoices) maxVoices = synth.activeVoices;  // 切り替え中は前の機種の数
+      for (int i = 0; i < Synth::BLOCK * 2; i++) {
+        int v = buf[i];
+        if (abs(v) > st.peak) st.peak = abs(v);
+        if (abs(v) >= 31990) st.clip++;
+        st.n++;
+        out.push_back(buf[i]);
+      }
+    }
+    demo.on = false;
+    demo.tick(synth);  // 止めたことを伝える
+    run(out, 1.5f, st);
+    writeWav(dir + "/demo_" + MODELS[m].name + ".wav", out);
+    bool bad = st.peak < 2000 || st.clip > st.n / 50 || synth.activeVoices != 0;
+    printf("demo %-8s peak %5d  clipped %5.2f%%  max voices %d  after stop %d%s\n", MODELS[m].name, st.peak, 100.0 * st.clip / st.n, maxVoices,
+           (int)synth.activeVoices, bad ? "  <-- CHECK" : "");
     if (bad) fail = 1;
   }
   return fail;
