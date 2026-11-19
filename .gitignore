@@ -3,3 +3,5 @@
 /test/out/
 /test/host_test
 /test/host_test.dSYM/
+# 動画の書き出し（大きいのでリポジトリに入れない）
+/video/*.mp4

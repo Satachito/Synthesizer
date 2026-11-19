@@ -1,0 +1,47 @@
+■ タイトル案 / Title
+Raspberry Pi Pico 2 W でオールドシンセを作ろう｜Build a Vintage-Style Synth with Pico 2 W
+
+■ 説明文 / Description
+Raspberry Pi Pico 2 W と DAC モジュールをジャンパー線 6 本でつなぐだけで、
+オールドシンセ風の音が出るシンセサイザーになります。
+7 機種を切り替えられ、つまみはスマホや iPad のブラウザで操作します。
+コードはすべて GitHub で公開しています（MIT ライセンス）。
+
+Connect a Raspberry Pi Pico 2 W to a DAC module with just 6 jumper wires
+and you get a vintage-style synthesizer.
+Switch between 7 models and tweak the knobs from your phone or iPad's browser.
+All code is open source on GitHub (MIT License).
+
+▼ コード・配線・使い方 / Code, wiring and usage
+https://github.com/Satachito/Synthesizer
+
+▼ 必要なもの / What you need
+・Raspberry Pi Pico 2 W（ピンヘッダー付きの Pico 2 WH が便利 / the WH with headers is easiest）
+・PCM5102A DAC モジュール / PCM5102A DAC module（3.5mm ジャック付き / with 3.5 mm jack）
+・ジャンパー線（メス–メス）6 本 / 6 female-to-female jumper wires
+
+▼ 機種 / Models
+MINI（Minimoog 風 / style）/ ACID（TB-303 風 / style）/ JUNO（Juno 風 / style）/
+PRO-5（Prophet-5 風 / style）/ MS（MS-20 風 / style）/ SEM（Oberheim SEM 風 / style）/
+STRINGS（ストリングマシン風 / string machine style）
+
+▼ できること / Features
+・最大 8 音のポリフォニー / Up to 8-voice polyphony
+・USB-MIDI と DIN の MIDI IN / USB-MIDI and DIN MIDI IN
+・プリセット 32 個（MIDI のプログラムチェンジで呼び出し）/ 32 presets, recalled by MIDI program change
+・自動デモ / 全機種デモ / Auto demo and tour-all demo
+・操作画面は日本語と英語 / Control panel in Japanese and English
+
+▼ チャプター / Chapters
+0:00 必要な部品 / What you need
+0:12 配線と書き込み / Wiring and flashing
+0:24 7 機種デモ / 7-model demo
+1:11 できること / Features
+
+※ 各機種は元の楽器の雰囲気を模したもので、元の楽器のメーカーとは関係ありません。製品名は各社の商標です。
+※ Each model is inspired by the original instrument and is not affiliated with its maker. Product names are trademarks of their respective owners.
+※ デモのフレーズはこのプロジェクトのための書き下ろしです。
+※ The demo phrases were written for this project.
+
+■ タグ案 / Tags
+Raspberry Pi Pico, Pico 2 W, シンセサイザー, synthesizer, 自作シンセ, DIY synth, PCM5102A, MIDI, 電子工作, electronics, Arduino
